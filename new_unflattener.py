@@ -1,14 +1,18 @@
 from ida_hexrays import *
-from cfgUtil import *
-from my_microcode_log import *
+from .cfgUtil import *
+from .my_microcode_log import *
+from .instructions import Instructions
+from .remove_dead_code import RemoveDeadCode
 import logging
+from .logger_config import get_logger
 from typing import TypedDict, List
-from instructions import Instructions
-from logger_config import get_logger
+from . import config
 
 logger = get_logger(__name__)
 
 JMP_OPCODE_HANDLED = [m_jnz, m_jz, m_jae, m_jb, m_ja, m_jbe, m_jge, m_jg, m_jl, m_jle]
+
+hook_instance = None
 
 class StateAssignment(TypedDict):
     mblock_id: int
@@ -29,7 +33,7 @@ class mblock_valranges_filter(vd_printer_t):
         return self.valranges
     
     def _print(self, indent, line):
-        if "VALRANGES" in line:
+        if "VALRANGES" in line or "BLOCK" in line:
             self.valranges.append("".join([c if 0x20 <= ord(c) <= 0x7e else "" for c in line]))
         return 1
 
@@ -40,6 +44,7 @@ class Unflattener:
         self.dispatcher_id = dispatcher_id
         self.dispatcher_ea = mba.get_mblock(dispatcher_id).start
         self.storage_carrier = None
+        self.storage_list:list[mop_t] = [] # 存储所有可能用在ollvm分发的变量
         self.state_assignments: list[StateAssignment] = []  # 存储状态变量的赋值语句
         self.possible_states: list[PossibleState] = []  # 存储所有可能的状态值
 
@@ -84,16 +89,51 @@ class Unflattener:
         else:
             logger.debug("不是主分发块")
 
-    def find_mlbock_valranges(self):
-        """
-        找到所有块的VALRANGES
-        """
+    def find_use_compare(self):
+        class GetOpt(minsn_visitor_t):
+            def __init__(self):
+                super().__init__()
+                self.mop_list = {}
+
+            def visit_minsn(self):
+                if self.curins.opcode in JMP_OPCODE_HANDLED:
+                    mop_l :mop_t= self.curins.l
+                    if mop_l.t == mop_S:
+                        tmp = "%0x{:X}".format(mop_l.s.off)
+                        # logger.debug("找到栈上变量: %s", tmp)
+                        if tmp not in self.mop_list.keys():
+                            self.mop_list[tmp] = 1
+                        else:
+                            self.mop_list[tmp] += 1
+                    elif mop_l.t == mop_r:
+                        mreg = get_mreg_name(mop_l.r, mop_l.size)
+                        if mreg not in self.mop_list.keys():
+                            self.mop_list[mreg] = 1
+                        else:
+                            self.mop_list[mreg] += 1
+                return 0
+            
+            def get_mop_list(self):
+                return self.mop_list
+
+        getopt = GetOpt()
+        self.mba.for_all_topinsns(getopt)
+        mop_list:dict = getopt.get_mop_list()
+        sort_mop_list = sorted(mop_list.items(), key=lambda x: x[1], reverse=True)
+        self.storage_carrier = sort_mop_list[0][0]
+
+
+    def find_mblock_valranges(self):
+        # 找到所有块的VALRANGES
         mba = self.mba
         vp = mblock_valranges_filter()
         mba._print(vp)
         # logger.info(vp.get_valranges())
         for line in vp.get_valranges():
-            mblock_id = int(line.split(". ")[0])
+            if "BLOCK" in line:
+                mblock_id = int(line.split("BLOCK ")[1].split(" ")[0])
+                continue
+            # mblock_id = int(line.split(". ")[0])
             # logger.debug("mblock_id: %d", mblock_id)
             valranges_value = line.split("VALRANGES: ")[1]
             # logger.debug("valranges_value: %s", valranges_value)
@@ -165,7 +205,6 @@ class Unflattener:
                     cur_mblock = self.mba.get_mblock(cur_mblock_id)
                     change_jmp_target(cur_mblock, next_mblock_id)
                     nb_patch += 1
-        return nb_patch
 
     def deflat_level_2(self):
         """
@@ -179,17 +218,44 @@ class Unflattener:
                 cur_mblock = self.mba.get_mblock(cur_mblock_id)
                 change_jmp_target(cur_mblock, next_mblock_id)
 
+    def deflat_level_3(self):
+        """
+        仅修改真实块部分
+        """
+        self.find_use_compare()
+        for state_assignment in self.state_assignments:
+            if state_assignment['storage'] == self.storage_carrier:
+                flow_block = self.find_in_possible_states(valrange_value=state_assignment['value'])
+                if flow_block != None:
+                    next_mblock_id = flow_block['mblock_id']
+                    cur_mblock_id = state_assignment['mblock_id']
+                    cur_mblock = self.mba.get_mblock(cur_mblock_id)
+                    change_jmp_target(cur_mblock, next_mblock_id)
+
+    def deflat_level_4(self):
+        for state_assignment in self.state_assignments:
+            flow_block = self.find_in_possible_states(valrange_name=state_assignment['storage'], valrange_value=state_assignment['value'])
+            if flow_block != None:
+                next_mblock_id = flow_block['mblock_id']
+                cur_mblock_id = state_assignment['mblock_id']
+                cur_mblock = self.mba.get_mblock(cur_mblock_id)
+                change_jmp_target(cur_mblock, next_mblock_id)
+
     def deflat(self, level=1):
         nb_patch = 0
         if self.dispatcher_id == 0:
            self.find_dispatcher_id()
         self.get_dispatcher_use_compare()
-        self.find_mlbock_valranges()
+        self.find_mblock_valranges()
         self.find_next_status_in_mblock()
         if level == 1:
-            nb_patch += self.deflat_level_1()
-        if level > 1:
+            self.deflat_level_1()
+        if level == 2:
             self.deflat_level_2()
+        if level == 3:
+            self.deflat_level_3()
+        if level == 4:
+            self.deflat_level_4()
         return nb_patch
 
 class HexraysDecompilationHook(Hexrays_Hooks):
@@ -200,16 +266,34 @@ class HexraysDecompilationHook(Hexrays_Hooks):
     def glbopt(self, mba: mbl_array_t):
         # dump_microcode_for_debug(mba, "D:\\project\\ida_split", "before_unflatten")
         # unflat.find_mlbock_valranges(mba)
+        # if not config.enable_ollvm_unflatten:
+        #     return MERR_OK
         if mba.entry_ea not in self.deflat_list:
+            if config.enable_remove_dead_code:
+                rdc = RemoveDeadCode()
+                mba.for_all_topinsns(rdc)
             # struction = Instructions(mba)
             # struction.instructions_fix()
-            unflat = Unflattener(mba, 2)
-            unflat.deflat(1)
+            if config.enable_ollvm_unflatten:
+                unflat = Unflattener(mba)
+                unflat.deflat(4)
+            # mba.remove_empty_and_unreachable_blocks()
+            # dump_microcode_for_debug(mba, "D:\\project\\ida_split", "after_unflatten")
             self.deflat_list.append(mba.entry_ea)
             return MERR_LOOP
         else:
             self.deflat_list.remove(mba.entry_ea)
             return MERR_OK
 
-testHook = HexraysDecompilationHook()
-print(testHook.hook())
+# testHook = HexraysDecompilationHook()
+# print(testHook.hook())
+
+def main():
+    global hook_instance
+
+    if hook_instance:
+        hook_instance.unhook()
+
+    hook_instance = HexraysDecompilationHook()
+    hook_instance.hook()
+    print("ollvm反混淆已加载")

@@ -1,5 +1,5 @@
 from ida_hexrays import *
-from cfgUtil import *
+from .cfgUtil import *
 import logging
 import z3
 
@@ -69,12 +69,14 @@ class Instructions:
             bit_size = AND_TABLE[minsn.d.size]
             left = self.parse_mop(minsn.l) if minsn.l.t != mop_z else None
             right = self.parse_mop(minsn.r) if minsn.r.t != mop_z else None
-            if right is None:
+            if right is None and left is not None:
                 return ops[minsn.opcode](left) & bit_size
-            elif left is None:
+            elif left is None and right is not None:
                 return ops[minsn.opcode](right) & bit_size
-            else:
+            elif left is not None and right is not None:
                 return ops[minsn.opcode](left, right) & bit_size
+            else:
+                raise NotImplementedError(f"Missing operands for opcode: {minsn.dstr()}")
         else:
             raise NotImplementedError(f"Unsupported opcode: {minsn.dstr()}")
     

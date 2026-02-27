@@ -60,7 +60,7 @@ def change_jmp_target(mblock:mblock_t, target_mblock_serial:int):
     else:
         ori_mblock_serial = mblock.serial + 1
         insert_goto(mblock, target_mblock_serial)
-    if ori_mblock_serial != 0:
+    if ori_mblock_serial != 0 and ori_mblock_serial != target_mblock_serial:
         logger.info(f"改变块关系:{mblock.serial}->{ori_mblock_serial}, {mblock.serial}->{target_mblock_serial}")
         modify_edge(mblock.mba, mblock.serial, target_mblock_serial, ori_mblock_serial)
 
@@ -97,29 +97,33 @@ def clear_edge(mba:mba_t, mblock_id: int):
 def modify_edge(mba:mba_t, cur_block_id: int, new_block_id: int = 0, old_block_id: int = 0):
     """
     修改微代码块之间的边关系（控制流边）
-    
+
     Args:
         mba: 微代码块数组
         cur_block_id: 当前微代码块ID
         new_block_id: 新的后继块ID（为0表示不添加新边）
         old_block_id: 要移除的旧后继块ID（为0表示不移除）
-    
+
     功能:
         - 移除从cur_block到old_block的边
         - 添加从cur_block到new_block的边
         - 更新相关块的前驱和后继集合
     """
     cur_block: mblock_t = mba.get_mblock(cur_block_id)
-    new_block: mblock_t = mba.get_mblock(new_block_id)
-    old_block: mblock_t = mba.get_mblock(old_block_id)
+
+    # 只在需要时获取块
+    new_block = mba.get_mblock(new_block_id) if new_block_id != 0 else None
+    old_block = mba.get_mblock(old_block_id) if old_block_id != 0 else None
 
     cur_block_succset = [x for x in cur_block.succset]
-    new_block_predset = [x for x in new_block.predset]
-    old_block_predset = [x for x in old_block.predset]
+    new_block_predset = [x for x in new_block.predset] if new_block else []
+    old_block_predset = [x for x in old_block.predset] if old_block else []
     old_block_index = len(cur_block_succset)
 
     logger.debug(f"修改块关系前:cur_block_succset:{cur_block_succset}, new_block_predset:{new_block_predset}, old_block_predset:{old_block_predset}")
-    if old_block_id != 0 and old_block_id in cur_block_succset:
+
+    # 移除旧边
+    if old_block_id != 0 and old_block_id in cur_block_succset and old_block:
         old_block_index = cur_block_succset.index(old_block_id)
         cur_block_succset.remove(old_block_id)
         if cur_block_id in old_block_predset:
@@ -128,7 +132,8 @@ def modify_edge(mba:mba_t, cur_block_id: int, new_block_id: int = 0, old_block_i
             for i in old_block_predset:
                 old_block.predset.push_back(i)
 
-    if new_block_id != 0 and new_block_id not in cur_block_succset:
+    # 添加新边
+    if new_block_id != 0 and new_block_id not in cur_block_succset and new_block:
         cur_block_succset.insert(old_block_index, new_block_id)
         if cur_block_id not in new_block_predset:
             new_block_predset.append(cur_block_id)
@@ -136,20 +141,13 @@ def modify_edge(mba:mba_t, cur_block_id: int, new_block_id: int = 0, old_block_i
             for i in new_block_predset:
                 new_block.predset.push_back(i)
 
+    # 更新当前块的后继集合
     cur_block.succset.clear()
     for i in cur_block_succset:
         cur_block.succset.push_back(i)
 
     logger.debug(f"修改块关系后:cur_block_succset:{cur_block_succset}, new_block_predset:{new_block_predset}, old_block_predset:{old_block_predset}")
-    # if old_block_id != 0 and cur_block.succset.has(old_block_id):
-    #     cur_block.succset._del(old_block_id)
-    #     if old_block.predset.has(cur_block_id):
-    #         old_block.predset._del(cur_block_id)
     
-    # if new_block_id != 0 and not cur_block.succset.has(new_block_id):
-    #     cur_block.succset.push_back(new_block_id)
-    #     if not new_block.predset.has(cur_block_id):
-    #         new_block.predset.push_back(cur_block_id)
 def check_mblock_tail_opcode_is_goto(mblock:mblock_t):
     """
     检查微代码块的尾部指令是否为无条件跳转
