@@ -1,7 +1,5 @@
 from ida_hexrays import *
 from .cfgUtil import *
-from .my_microcode_log import *
-from .instructions import Instructions
 from .remove_dead_code import RemoveDeadCode
 import logging
 from .logger_config import get_logger
