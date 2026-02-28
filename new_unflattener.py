@@ -220,7 +220,7 @@ class Unflattener:
 
     def deflat_level_3(self):
         """
-        仅修改真实块部分
+        仅修改最多用于比较的分发器部分
         """
         self.find_use_compare()
         for state_assignment in self.state_assignments:
@@ -233,6 +233,9 @@ class Unflattener:
                     change_jmp_target(cur_mblock, next_mblock_id)
 
     def deflat_level_4(self):
+        """
+        安全模式
+        """
         for state_assignment in self.state_assignments:
             flow_block = self.find_in_possible_states(valrange_name=state_assignment['storage'], valrange_value=state_assignment['value'])
             if flow_block != None:
