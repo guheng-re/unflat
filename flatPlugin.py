@@ -1,5 +1,6 @@
 import idaapi
 import ida_kernwin
+import ida_hexrays
 import unflat.config as config
 
 UNOLLVM_ACTION_NAME = "unflat:toggle_ollvm"
@@ -28,6 +29,9 @@ class ToggleOllvmHandler(idaapi.action_handler_t):
 
         state = "开启" if config.enable_ollvm_unflatten else "关闭"
         print(f"[+] OLLVM 反混淆已{state}")
+        vdui = ida_hexrays.get_widget_vdui(ida_kernwin.get_current_widget())
+        if vdui:
+            vdui.refresh_view(True)
         return 1
 
     def update(self, ctx):
@@ -39,6 +43,9 @@ class ToggleBCFHandler(idaapi.action_handler_t):
 
         state = "开启" if config.enable_remove_dead_code else "关闭"
         print(f"[+] 死代码消除已{state}")
+        vdui = ida_hexrays.get_widget_vdui(ida_kernwin.get_current_widget())
+        if vdui:
+            vdui.refresh_view(True)
         return 1
 
     def update(self, ctx):
@@ -48,7 +55,7 @@ class MicroPlugin(idaapi.plugin_t):
     flags = idaapi.PLUGIN_KEEP
     comment = "Hot reload microcode plugin"
     help = ""
-    wanted_name = "Micro Hot Reload"
+    wanted_name = "OLLVM反混淆"
     wanted_hotkey = ""
 
     def init(self):
